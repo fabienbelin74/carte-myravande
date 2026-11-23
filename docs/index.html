@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carte du monde – captures fusionnées</title>
+<style>
+  :root { --bg:#c4e2f7; --ink:#1d2733; --muted:#5b6b7b; --panel:#ffffffee; --line:#c9d4de; --accent:#1f6feb; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); overflow:hidden; }
+  header { position:fixed; top:0; left:0; right:0; z-index:5; display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); backdrop-filter:blur(4px); }
+  h1 { font-size:15px; margin:0; font-weight:650; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg button { border:0; background:#fff; padding:6px 10px; font:inherit; cursor:pointer; color:var(--ink); }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background:var(--accent); color:#fff; }
+  form { display:inline-flex; gap:6px; }
+  input[type=text] { width:104px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+  .btn { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; font:inherit; cursor:pointer; color:var(--ink); }
+  .btn[aria-pressed="true"] { background:#eaf1ff; border-color:var(--accent); }
+  .btn:hover, .seg button:hover:not([aria-pressed="true"]) { background:#eef3f8; }
+  label.chk { display:inline-flex; gap:5px; align-items:center; cursor:pointer; }
+  #msg { color:#b42318; font-size:13px; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:grab; }
+  canvas.drag { cursor:grabbing; }
+  #tip { position:fixed; z-index:6; pointer-events:none; display:none; background:#16202bee; color:#fff; padding:7px 10px; border-radius:8px; font-size:13px; max-width:300px; }
+  #tip b { font-size:16px; letter-spacing:.2px; }
+  .sw { display:inline-block; width:11px; height:11px; border-radius:3px; vertical-align:-1px; margin-right:5px; border:1px solid #fff6; }
+  .sw.l { border:1px solid #0003; }
+  #info { position:fixed; left:12px; bottom:12px; z-index:5; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:13px; max-width:min(92vw,560px); }
+  #info .muted { color:var(--muted); }
+  #zoombtns { position:fixed; right:12px; bottom:12px; z-index:5; display:flex; flex-direction:column; gap:6px; }
+  #zoombtns .btn { width:36px; height:36px; padding:0; font-size:18px; }
+  #panel { position:fixed; top:54px; right:12px; bottom:64px; width:min(360px,92vw); z-index:5; background:#fffffff2; border:1px solid var(--line); border-radius:12px; padding:12px 14px; overflow:auto; display:none; font-size:13px; }
+  #panel h2 { font-size:14px; margin:0 0 8px; }
+  #panel h3 { font-size:12px; margin:14px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  #panel table { border-collapse:collapse; width:100%; }
+  #panel td, #panel th { padding:3px 4px; text-align:left; border-bottom:1px solid #eef1f5; vertical-align:top; }
+  #panel th { font-weight:600; color:var(--muted); font-size:12px; }
+  .entry { border:1px solid #e5eaf0; border-radius:8px; padding:7px 9px; margin-bottom:7px; }
+  .entry b { font-size:13px; }
+  .ok { color:#067647; } .muted { color:var(--muted); }
+  #err { position:fixed; inset:60px 12px auto 12px; z-index:7; background:#fff3f2; border:1px solid #f5b5b0; color:#7a271a; padding:10px 12px; border-radius:10px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Carte du monde</h1>
+  <span class="seg" role="group" aria-label="Affichage">
+    <button id="m-cells" aria-pressed="true">Cases</button>
+    <button id="m-src" aria-pressed="false">Sources</button>
+    <button id="m-img" aria-pressed="false">Capture</button>
+    <button id="m-both" aria-pressed="false">Capture + grille</button>
+  </span>
+  <label class="chk"><input type="checkbox" id="chg"> Changements</label>
+  <label class="chk"><input type="checkbox" id="lnk" checked> Tunnels</label>
+  <form id="go" autocomplete="off">
+    <input id="q" type="text" placeholder="ex. 5;27" aria-label="Numéro de case">
+    <button class="btn" type="submit">Aller</button>
+  </form>
+  <button class="btn" id="b-leg" aria-pressed="false">Légende</button>
+  <button class="btn" id="b-jrn" aria-pressed="false">Journal</button>
+  <span id="msg" role="status"></span>
+</header>
+<canvas id="c"></canvas>
+<div id="tip"></div>
+<div id="panel"></div>
+<div id="info"><span class="muted">Survole une case pour voir son numéro. Molette ou pincement pour zoomer, glisser pour se déplacer.</span></div>
+<div id="zoombtns"><button class="btn" id="zin" aria-label="Zoom avant">+</button><button class="btn" id="zout" aria-label="Zoom arrière">−</button><button class="btn" id="zfit" aria-label="Tout voir" style="font-size:12px">⤢</button></div>
+<div id="err"></div>
+
+<script>
+"use strict";
+const S3 = Math.sqrt(3);
+const SRC_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#0aa5a5', '#b8a600', '#8d5524'];
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const tip = document.getElementById('tip'), info = document.getElementById('info'), msg = document.getElementById('msg'), panel = document.getElementById('panel');
+let D = null, L = null, img = null, imgOk = false;
+let mode = 'cells', showChg = false, showLnk = true;
+let view = { k: 1, tx: 0, ty: 0 };
+let hover = null, pinned = null, dpr = 1;
+let pal = [], palH = [];
+const cellMap = new Map();
+const key = (x, y) => x + ';' + y;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const rgb = a => 'rgb(' + a.map(v => Math.round(v)).join(',') + ')';
+const fdate = d => d ? d.split('-').reverse().join('/') : 'date inconnue';
+
+function showErr(t) { const e = document.getElementById('err'); e.textContent = t; e.style.display = 'block'; }
+
+async function init() {
+  try {
+    const r = await fetch('carte.json'); if (!r.ok) throw new Error('carte.json : ' + r.status);
+    D = await r.json();
+  } catch (e) { showErr('Impossible de charger les données de la carte (' + e.message + ').'); return; }
+  L = D.lattice; L.sx = S3 * L.sy; L.R = 2 * L.sy / S3;
+  const A = D.hachure.alpha, C = D.hachure.couleur;
+  pal = D.terrains.map(t => t.rgb);
+  palH = pal.map(p => p.map((v, i) => (1 - A) * v + A * C[i]));
+  for (const c of D.cells) cellMap.set(key(c[0], c[1]), c);
+  img = new Image(); img.onload = () => { imgOk = true; draw(); }; img.onerror = () => { imgOk = false; };
+  img.src = 'capture.jpg';
+  resize(); fit(); bind();
+}
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(cv.clientWidth * dpr); cv.height = Math.round(cv.clientHeight * dpr);
+  draw();
+}
+function bounds() {
+  if (D.capture) return D.capture;
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const c of D.cells) { const [cx, cy] = cellCenter(c[0], c[1]); x0 = Math.min(x0, cx); x1 = Math.max(x1, cx); y0 = Math.min(y0, cy); y1 = Math.max(y1, cy); }
+  return { x: x0 - 20, y: y0 - 20, w: x1 - x0 + 40, h: y1 - y0 + 40 };
+}
+function fit() {
+  const b = bounds(), w = cv.clientWidth, h = cv.clientHeight - 50;
+  const k = Math.min(w / b.w, h / b.h) * 0.97;
+  view.k = k; view.tx = (w - b.w * k) / 2 - b.x * k; view.ty = 50 + (h - b.h * k) / 2 - b.y * k;
+  draw();
+}
+const cellCenter = (x, y) => [L.ox + L.sx * x, L.oy + L.sy * y];
+function screenToWorld(sx, sy) { return [(sx - view.tx) / view.k, (sy - view.ty) / view.k]; }
+
+function pxToCell(wx, wy) {
+  const x0 = Math.round((wx - L.ox) / L.sx), fy = (wy - L.oy) / L.sy, y0 = Math.round(fy);
+  let best = null, bd = 1e18;
+  for (let x = x0 - 1; x <= x0 + 1; x++) for (let y = y0 - 2; y <= y0 + 2; y++) {
+    if (((x + y) % 2 + 2) % 2) continue;
+    const c = cellCenter(x, y), d = (c[0] - wx) ** 2 + (c[1] - wy) ** 2;
+    if (d < bd) { bd = d; best = [x, y]; }
+  }
+  return best;
+}
+
+function hexPath(cx, cy, R) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 3 * i, px = cx + R * Math.cos(a), py = cy + R * Math.sin(a);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+}
+const lum = c => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+
+function draw() {
+  if (!D) return;
+  const W = cv.width, H = cv.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#c4e2f7'; ctx.fillRect(0, 0, W, H);
+  const k = view.k * dpr;
+  ctx.setTransform(k, 0, 0, k, view.tx * dpr, view.ty * dpr);
+  const showImg = (mode === 'img' || mode === 'both') && imgOk;
+  if (showImg) { const b = D.capture; ctx.imageSmoothingEnabled = view.k < 3; ctx.drawImage(img, b.x, b.y, b.w, b.h); }
+  const [wx0, wy0] = screenToWorld(0, 0), [wx1, wy1] = screenToWorld(cv.clientWidth, cv.clientHeight);
+  const R = L.R, big = view.k * R > 13, hatchOn = view.k * R > 9;
+  const lw = Math.max(0.5 / view.k, 0.12);
+  for (const c of D.cells) {
+    const [cx, cy] = cellCenter(c[0], c[1]);
+    if (cx < wx0 - R || cx > wx1 + R || cy < wy0 - R || cy > wy1 + R) continue;
+    hexPath(cx, cy, R * 0.995);
+    let fillc = null;
+    if (mode === 'cells') {
+      fillc = c[4] ? palH[c[2]] : pal[c[2]];
+      ctx.fillStyle = rgb(fillc); ctx.fill();
+      ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(20,30,40,.35)'; ctx.stroke();
+      if (c[4] && hatchOn) {
+        ctx.save(); ctx.clip();
+        ctx.beginPath(); const st = R * 0.32;
+        for (let o = -2 * R; o <= 2 * R; o += st) { ctx.moveTo(cx + o - R, cy + R); ctx.lineTo(cx + o + R, cy - R); }
+        ctx.lineWidth = Math.max(0.8 / view.k, 0.1); ctx.strokeStyle = 'rgba(40,50,70,.22)'; ctx.stroke(); ctx.restore();
+      }
+    } else if (mode === 'src') {
+      ctx.fillStyle = SRC_COLORS[c[3] % SRC_COLORS.length]; ctx.globalAlpha = c[4] ? 0.55 : 0.9; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.lineWidth = lw; ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.stroke();
+      fillc = [60, 60, 60];
+    } else if (mode === 'both') {
+      ctx.lineWidth = lw * 1.2; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.stroke();
+    }
+    if (showChg && c.length > 5) {
+      hexPath(cx, cy, R * 0.9); ctx.lineWidth = Math.max(2.2 / view.k, 0.5); ctx.strokeStyle = '#ff6a00'; ctx.stroke();
+    }
+    if (big && mode !== 'img') {
+      const dark = fillc ? lum(fillc) < 120 : false;
+      ctx.fillStyle = (mode === 'both') ? 'rgba(255,255,255,.9)' : (dark ? 'rgba(255,255,255,.88)' : 'rgba(0,0,0,.62)');
+      ctx.font = (R * 0.36) + 'px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(c[0] + ';' + c[1], cx, cy);
+    }
+  }
+  if (mode !== 'img') {
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '600 ' + (12 / view.k) + 'px system-ui,sans-serif';
+    for (const lb of D.labels) {
+      const [cx, cy] = cellCenter(lb.x, lb.y);
+      ctx.lineWidth = 3 / view.k; ctx.strokeStyle = 'rgba(255,255,255,.92)'; ctx.strokeText(lb.t, cx, cy);
+      ctx.fillStyle = '#1d2733'; ctx.fillText(lb.t, cx, cy);
+    }
+  }
+  if (showLnk && mode !== 'img' && D.liens) {
+    for (const l of D.liens) {
+      const [ax, ay] = cellCenter(l.a[0], l.a[1]), [bx, by] = cellCenter(l.b[0], l.b[1]);
+      const tun = l.type === 'tunnel', u = 1 / view.k;
+      ctx.lineCap = 'round';
+      ctx.setLineDash(tun ? [0.1, 4.2 * u] : [7 * u, 4.5 * u]);
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      ctx.lineWidth = (tun ? 5.2 : 3.4) * u; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.stroke();
+      ctx.lineWidth = (tun ? 3.2 : 1.8) * u; ctx.strokeStyle = tun ? '#4a2c2a' : '#55606b'; ctx.stroke();
+      ctx.setLineDash([]);
+      for (const [px, py] of [[ax, ay], [bx, by]]) {
+        ctx.beginPath(); ctx.arc(px, py, 4.5 * u, 0, 6.2832);
+        ctx.fillStyle = tun ? '#4a2c2a' : '#55606b'; ctx.fill(); ctx.lineWidth = 1.6 * u; ctx.strokeStyle = '#fff'; ctx.stroke();
+      }
+    }
+  }
+  for (const [c, col, w] of [[pinned, '#e11d48', 2.5], [hover, '#111827', 1.8]]) {
+    if (!c) continue;
+    const [cx, cy] = cellCenter(c[0], c[1]);
+    hexPath(cx, cy, R); ctx.lineWidth = w / view.k; ctx.strokeStyle = col; ctx.stroke();
+    if (col === '#111827') { hexPath(cx, cy, R); ctx.lineWidth = 0.8 / view.k; ctx.strokeStyle = '#fff'; ctx.stroke(); }
+  }
+}
+
+function tname(t) { const T = D.terrains[t], n = T.nom; return (n ? esc(n) : 'Terrain n°' + t) + (T.infranchissable ? ' (infranchissable)' : ''); }
+function srcLabel(i) { const s = D.sources[i]; return esc(s.nom) + ' (' + fdate(s.date) + (s.date_estimee ? ', date estimée' : '') + ')'; }
+function swatch(c, hatched) { return '<span class="sw" style="background:' + rgb(hatched ? palH[c] : pal[c]) + '"></span>'; }
+function describe(c) {
+  const rec = cellMap.get(key(c[0], c[1]));
+  const head = c[0] + ';' + c[1];
+  if (!rec) return { head, body: 'Case inconnue (aucune capture ne la montre)' };
+  let body = swatch(rec[2], rec[4]) + tname(rec[2]) + (rec[4] ? ' · hachurée' : '') + '<br>Source : ' + srcLabel(rec[3]);
+  if (rec.length > 5) {
+    const h = rec[5][rec[5].length - 1];
+    body += '<br><span style="color:#ffb27a">Avant : ' + swatch(h[0], false) + tname(h[0]) + ' (' + srcLabel(h[1]) + ')</span>';
+  }
+  const ln = (D.liens || []).filter(l => (l.a[0] === c[0] && l.a[1] === c[1]) || (l.b[0] === c[0] && l.b[1] === c[1]));
+  for (const l of ln) {
+    const o = (l.a[0] === c[0] && l.a[1] === c[1]) ? l.b : l.a;
+    body += '<br><b>' + (l.type === 'tunnel' ? 'Tunnel' : 'Liaison en tirets') + '</b> vers ' + o[0] + ';' + o[1] + (l.approx ? ' <span class="muted">(extrémité à confirmer)</span>' : '');
+  }
+  return { head, body };
+}
+function updateInfo() {
+  const c = hover || pinned; if (!c) return;
+  const d = describe(c);
+  info.innerHTML = '<b>' + d.head + '</b> · ' + d.body.replace(/<br>/g, ' · ') + (pinned && !hover ? ' <span class="muted">(épinglée)</span>' : '');
+}
+
+function legendHTML() {
+  const cnt = D.terrains.map(() => [0, 0]); const sc = D.sources.map(() => 0);
+  for (const c of D.cells) { cnt[c[2]][c[4] ? 1 : 0]++; sc[c[3]]++; }
+  let h = '<h2>Légende</h2><h3>Terrains</h3><table><tr><th></th><th>Terrain</th><th>Pleines</th><th>Hachurées</th></tr>';
+  D.terrains.forEach((t, i) => { h += '<tr><td>' + swatch(i, false) + swatch(i, true) + '</td><td>' + tname(i) + '</td><td>' + cnt[i][0] + '</td><td>' + cnt[i][1] + '</td></tr>'; });
+  h += '</table><p class="muted">Une case hachurée est un terrain connu mais affiché estompé dans la capture. Elle n\'est pas comptée comme un changement de terrain.</p>';
+  if (D.liens && D.liens.length) {
+    h += '<h3>Liens (' + D.liens.length + ')</h3><table><tr><th>Type</th><th>De</th><th>Vers</th></tr>';
+    D.liens.forEach(l => { h += '<tr><td>' + (l.type === 'tunnel' ? 'Tunnel' : 'Tirets') + '</td><td>' + l.a.join(';') + '</td><td>' + l.b.join(';') + (l.approx ? ' ?' : '') + '</td></tr>'; });
+    h += '</table><p class="muted">Tunnel : pointillés sombres, les personnages peuvent s\'y déplacer. Tirets : liaison grise, nature à confirmer. « ? » : une extrémité est à confirmer.</p>';
+  }
+  h += '<h3>Captures (mode « Sources »)</h3><table><tr><th></th><th>Capture</th><th>Cases</th></tr>';
+  D.sources.forEach((s, i) => { h += '<tr><td><span class="sw" style="background:' + SRC_COLORS[i % SRC_COLORS.length] + '"></span></td><td>' + srcLabel(i) + '</td><td>' + sc[i] + '</td></tr>'; });
+  h += '</table><p class="muted">Chaque case garde la source de la capture la plus récente qui la montre.</p>';
+  return h;
+}
+function journalHTML() {
+  let h = '<h2>Journal des mises à jour</h2>';
+  h += '<div class="entry"><b>Fusion initiale</b><br><span class="muted">Map_AurA + Map_Olaf (17/11/2026)</span></div>';
+  for (const e of D.journal || []) {
+    h += '<div class="entry"><b>' + esc(e.nom) + ' · ' + fdate(e.date) + '</b> <span class="' + (e.statut === 'OK' ? 'ok' : '') + '">' + esc(e.statut) + '</span><br>'
+      + '<span class="muted">' + esc(e.fichier) + '</span><br>'
+      + 'Échelle ×' + e.echelle.toFixed(3) + ' · hexagone de ' + e.hex_px.toFixed(1) + ' px<br>'
+      + 'Recalage : ' + e.identiques + ' / ' + e.comparees + ' cases identiques (' + Math.round(100 * e.identiques / Math.max(e.comparees, 1)) + ' %)<br>'
+      + '<b>' + e.nouvelles + '</b> nouvelles · ' + e.confirmees + ' confirmées · <b>' + e.modifiees + '</b> modifiées'
+      + (e.non_reconnues ? ' · ' + e.non_reconnues + ' non reconnues' : '') + '</div>';
+  }
+  h += '<p class="muted">« Modifiées » : le terrain a changé ; l\'ancienne valeur est gardée (case entourée en orange avec « Changements »).</p>';
+  return h;
+}
+function setPanel(which) {
+  const bl = document.getElementById('b-leg'), bj = document.getElementById('b-jrn');
+  const cur = panel.dataset.which;
+  if (cur === which) { panel.style.display = 'none'; panel.dataset.which = ''; bl.setAttribute('aria-pressed', false); bj.setAttribute('aria-pressed', false); return; }
+  panel.innerHTML = which === 'leg' ? legendHTML() : journalHTML();
+  panel.style.display = 'block'; panel.dataset.which = which;
+  bl.setAttribute('aria-pressed', which === 'leg'); bj.setAttribute('aria-pressed', which === 'jrn');
+}
+
+function bind() {
+  window.addEventListener('resize', resize);
+  const ptrs = new Map(); let last = null, moved = 0, pinch0 = null;
+  cv.addEventListener('pointerdown', e => {
+    cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]); moved = 0;
+    last = [e.clientX, e.clientY]; cv.classList.add('drag');
+    if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: view.k }; }
+  });
+  cv.addEventListener('pointermove', e => {
+    if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (ptrs.size === 2 && pinch0) {
+      const [a, b] = [...ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      zoomAt((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, pinch0.k * d / pinch0.d / view.k); moved = 99; return;
+    }
+    if (ptrs.size === 1 && (e.buttons !== 0 || e.pointerType === 'touch')) {
+      const dx = e.clientX - last[0], dy = e.clientY - last[1]; moved += Math.abs(dx) + Math.abs(dy);
+      view.tx += dx; view.ty += dy; last = [e.clientX, e.clientY]; draw();
+    }
+    if (e.pointerType === 'mouse') setHover(e.clientX, e.clientY);
+  });
+  const up = e => {
+    const wasTap = moved < 6 && ptrs.size === 1; ptrs.delete(e.pointerId); cv.classList.remove('drag'); pinch0 = null;
+    if (ptrs.size === 1) last = [...ptrs.values()][0];
+    if (wasTap) { const [wx, wy] = screenToWorld(e.clientX, e.clientY); pinned = pxToCell(wx, wy); if (e.pointerType !== 'mouse') hover = null; updateInfo(); draw(); }
+  };
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); cv.classList.remove('drag'); });
+  cv.addEventListener('pointerleave', () => { hover = null; tip.style.display = 'none'; draw(); });
+  cv.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015)); setHover(e.clientX, e.clientY); }, { passive: false });
+  document.getElementById('zin').onclick = () => zoomAt(cv.clientWidth / 2, cv.clientHeight / 2, 1.5);
+  document.getElementById('zout').onclick = () => zoomAt(cv.clientWidth / 2, cv.clientHeight / 2, 1 / 1.5);
+  document.getElementById('zfit').onclick = fit;
+  const ids = ['m-cells', 'm-src', 'm-img', 'm-both'], modes = ['cells', 'src', 'img', 'both'];
+  ids.forEach((id, n) => {
+    document.getElementById(id).onclick = () => {
+      mode = modes[n]; ids.forEach(i2 => document.getElementById(i2).setAttribute('aria-pressed', i2 === id));
+      msg.textContent = (!imgOk && n >= 2) ? 'Image de capture non chargée.' : ''; draw();
+    };
+  });
+  document.getElementById('lnk').onchange = e => { showLnk = e.target.checked; draw(); };
+  document.getElementById('chg').onchange = e => { showChg = e.target.checked; draw(); };
+  document.getElementById('b-leg').onclick = () => setPanel('leg');
+  document.getElementById('b-jrn').onclick = () => setPanel('jrn');
+  document.getElementById('go').addEventListener('submit', e => { e.preventDefault(); goTo(document.getElementById('q').value); });
+}
+function zoomAt(sx, sy, f) {
+  const nk = Math.min(Math.max(view.k * f, 0.25), 40), f2 = nk / view.k;
+  view.tx = sx - (sx - view.tx) * f2; view.ty = sy - (sy - view.ty) * f2; view.k = nk; draw();
+}
+function setHover(sx, sy) {
+  const [wx, wy] = screenToWorld(sx, sy), c = pxToCell(wx, wy);
+  hover = c; const d = describe(c);
+  tip.innerHTML = '<b>' + d.head + '</b><br>' + d.body;
+  tip.style.display = 'block';
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.min(sx + 16, window.innerWidth - tw - 8) + 'px';
+  tip.style.top = Math.min(sy + 16, window.innerHeight - th - 8) + 'px';
+  updateInfo(); draw();
+}
+function goTo(txt) {
+  msg.textContent = '';
+  const m = String(txt).trim().match(/^\(?\s*(-?\d+)\s*[;,\s]\s*(-?\d+)\s*\)?$/);
+  if (!m) { msg.textContent = 'Format attendu : x;y (ex. 5;27)'; return; }
+  const x = +m[1], y = +m[2];
+  if (((x + y) % 2 + 2) % 2) { msg.textContent = 'Numéro impossible : x+y doit être pair.'; return; }
+  pinned = [x, y];
+  const [cx, cy] = cellCenter(x, y), k = Math.max(view.k, 34 / L.R);
+  view.k = k; view.tx = cv.clientWidth / 2 - cx * k; view.ty = cv.clientHeight / 2 - cy * k;
+  hover = null; tip.style.display = 'none'; updateInfo(); draw();
+}
+init();
+</script>
+</body>
+</html>
